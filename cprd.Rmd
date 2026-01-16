@@ -60,11 +60,21 @@ library(accept)
 ```
 
 ```{r}
+
+## Data setup (private)
+This project requires a private dataset that is not stored in the repository.
+
+1. Obtain `accept_mi_ri_12nov.rds`
+2. Set an environment variable pointing to the folder containing the file:
+
+- Windows (PowerShell): `setx PROJECT_DATA_DIR "C:\path\to\data"`
+- macOS/Linux: `export PROJECT_DATA_DIR="/path/to/data"`
+
+The code will read: `file.path(Sys.getenv("PROJECT_DATA_DIR"), "accept_mi_ri_12nov.rds")`
 # ===============================================================
 # RUNNING ACCEPT 2.0
 # ===============================================================
-accept_final <- readRDS("C:/Users/jeenatm/cprd/accept_mi_ri_12nov.rds")
-accept <- accept_final
+accept <- readRDS(file.path(data_dir, "accept_mi_ri_12nov.rds"))
 
 num_chunks <- 1000
 accept_df <- accept %>%
@@ -82,11 +92,17 @@ for (i in 1:num_chunks) {
   gc()
 }
 
-saveRDS(accept_nov12, "C:/Users/jeenatm/cprd/pred/accept_13nov.rds")
+accept_final <- bind_rows(accept_results_list)
+saveRDS(
+  accept_nov13,
+  file.path(data_dir, "accept_13nov.rds")
+)
 ```
 
 
 ```{r}
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
 ##Follow up time in months
 
 accept_final$follow_up_months <-
@@ -148,7 +164,7 @@ boot_ci <- boot.ci(boot_res, type = "perc")
 boot_ci
 
 
-###PLOT NET BENEFIT CuRVE OF ACCEPT AND EXACERBATION HISTORY 
+###PLOT NET BENEFIT CURVE OF ACCEPT AND EXACERBATION HISTORY 
 
 thresholds <- seq(0.01, 0.5, by = 0.01)  
 horizon <- 1
@@ -1089,7 +1105,8 @@ legend("topright",
 # ACCEPT 2.0 PERFORMANCE EVALUATION- SECONDARY OUTCOME
 # ===============================================================
 # .rds file
-accept_final <- readRDS("C:/Users/jeenatm/cprd/New folder/accept_13nov.rds")
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
 
 # Redefine 'actual_exac_yn' based on 'severe_exac_FU'
 accept_final$actual_exac_yn <- ifelse(accept_final$severe_exac_FU > 0, 1, 0)
@@ -1462,656 +1479,11 @@ legend("topright",
 
 ```
 
-```{r}
-# ===============================================================
-#SENSITIVITY ANALYSIS 1
-# ===============================================================
-
-#  .rds file
-accept_final <- readRDS("C:/Users/jeenatm/cprd/New folder/accept_13nov.rds")
-
-# Drop rows where fev1_fvc is missing
-accept_final <- accept_final[!is.na(accept_final$fev1_fvc), ]
-
-
-# Cox model without  region 
-model_cll <- coxph(
-  Surv(time2event, actual_exac_yn) ~ (log(-log(1 - predicted_exac_probability))),
-  data = accept_final
-)
-
-summary(model_cll)
-
-# -------------------------------------------
-# Predicted risk at 1 year
-# -------------------------------------------
-
-df_new <- accept_final %>% mutate(time2event = 1)
-df_new$risk_cll <- 1 - exp(-predict(model_cll, newdata = df_new, type = "expected"))
-accept_final$risk_cll <- df_new$risk_cll
-
-# -------------------------------------------
-#Predicted risk at 1 year manually
-# -------------------------------------------
-# baseline cumulative hazard
-basehaz_data <- basehaz(model_cll, centered = FALSE)
-H0_1yr <- tail(basehaz_data$hazard[basehaz_data$time <= 1], 1)
-
-# model slope
-beta <- coef(model_cll)
-
-# LP from the transformed ACCEPT predictor
-accept_final$X <- log(-log(1 - accept_final$predicted_exac_probability))
-accept_final$LP <- beta * accept_final$X
-
-#  manual predicted risk
-accept_final$risk_manual <- 1 - exp(-H0_1yr * exp(accept_final$LP))
-
-all.equal(accept_final$risk_manual, accept_final$risk_cll)
-
-# -------------------------------------------
-# Observed / Expected ratio
-# -------------------------------------------
-
-t_horizon <- 1
-km_fit <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final)
-s <- summary(km_fit, times = t_horizon, extend = TRUE)
-obs_t <- 1 - s$surv
-exp_t <- mean(accept_final$risk_cll)
-OE_t <- obs_t / exp_t
-OE_t
-
-# Number of observed events (O)
-O <- sum(accept_final$actual_exac_yn)
-
-# Confidence interval
-alpha <- 0.05
-z <- qnorm(1 - alpha / 2)
-
-OE_summary <- c(
-  "OE" = OE_t,
-  "2.5 %" = OE_t * exp(-z * sqrt(1 / O)),
-  "97.5 %" = OE_t * exp(z * sqrt(1 / O))
-)
-
-OE_summary
-
-# -------------------------------------------
-# Slope
-# -------------------------------------------
-
-accept_final$pred.cll <- log(-log(1 - accept_final$risk_cll))
-gval <- coxph(Surv(time2event, actual_exac_yn) ~ pred.cll, data = accept_final)
-summary(gval)
-
-# -------------------------------------------
-# AUC
-# -------------------------------------------
-
-Uno_accept <- timeROC::timeROC(
-  T = accept_final$time2event,
-  delta = accept_final$actual_exac_yn,
-  marker = accept_final$risk_cll,
-  cause = 1,
-  weighting = "marginal",
-  times = 0.99,
-  iid = FALSE
-)
-
-plot(Uno_accept, time = 0.99)
-
-# Define a bootstrap function
-boot_auc <- function(data, indices) {
-  d <- data[indices, ]
-  roc_obj <- timeROC(
-    T = d$time2event,
-    delta = d$actual_exac_yn,
-    marker = d$risk_cll,
-    cause = 1,
-    weighting = "marginal",
-    times = 0.99,
-    iid = FALSE
-  )
-  return(roc_obj$AUC[2])
-}
-
-# Run bootstrap
-set.seed(123)
-boot_res <- boot(data = accept_final, statistic = boot_auc, R = 200)
-
-# AUC and 95% CI
-boot_ci <- boot.ci(boot_res, type = "perc")
-boot_ci
-
-# -------------------------------------------
-# Calibration Plot
-# -------------------------------------------
-
-dd <- rms::datadist(accept_final)
-# Refit Cox model using spline of predicted risk
-vcal1 <- coxph(Surv(time2event, actual_exac_yn) ~ ns(pred.cll, df = 3),
-               data = accept_final)
-
-# Survival at 1 year for each patient
-base_surv1 <- survfit(vcal1, newdata = accept_final)
-surv_1yr1 <- base_surv1$surv[which.min(abs(base_surv1$time - 1)), ]
-
-# Calibration dataset
-dat_cal <- data.frame(
-  pred = accept_final$risk_cll,
-  obs  = 1 - surv_1yr1
-)
-dat_cal <- dat_cal[order(dat_cal$pred), ]
-
-
-loess_fit <- loess(obs ~ pred, data = dat_cal, span = 0.75)
-
-pred_grid <- seq(0, 1, length.out = 200)
-loess_pred <- predict(loess_fit, newdata = data.frame(pred = pred_grid))
-
-## deciles 
-qs <- quantile(accept_final$risk_cll,
-               probs = seq(0, 1, 0.1), na.rm = TRUE)
-
-qs_u <- unique(qs)
-if (length(qs_u) < 11) {
-  accept_final$decile <- cut(rank(accept_final$risk_cll, ties.method="average"),
-                            breaks = quantile(rank(accept_final$risk_cll, ties.method="average"),
-                                              probs = seq(0,1,0.1), na.rm=TRUE),
-                            include.lowest = TRUE, labels = FALSE)
-} else {
-  accept_final$decile <- cut(accept_final$risk_cll,
-                            breaks = qs_u,
-                            include.lowest = TRUE,
-                            labels = FALSE)
-}
-
-## observed risk by decile at t0 (+ 95% CI) 
-decile_km <- do.call(rbind, lapply(sort(unique(accept_final$decile)), function(d) {
-  df_d <- accept_final[accept_final$decile == d & !is.na(accept_final$decile), ]
-
-  km  <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = df_d)
-  km1 <- summary(km, times = 0.99, extend = TRUE)
-
-  data.frame(
-    decile    = d,
-    n         = nrow(df_d),
-    mean_pred = mean(df_d$risk_cll, na.rm = TRUE),
-    obs_risk  = 1 - km1$surv,
-    lower     = 1 - km1$upper,
-    upper     = 1 - km1$lower
-  )
-}))
-
-## plot
-plot(dat_cal$pred, dat_cal$obs,
-     pch = 5, cex = 0.35, col = rgb(0, 0, 0, 0.15),
-     xlim = c(0, 1), ylim = c(0, 1),
-     xlab = "Predicted risk at 1 year (Recalibrated)",
-     ylab = "Observed risk at 1 year"
-    )
-
-lines(pred_grid, loess_pred, col = "green", lwd = 2)
-
-points(decile_km$mean_pred, decile_km$obs_risk, pch = 16, cex = 1.0, col = "black")
-arrows(decile_km$mean_pred, decile_km$lower,
-       decile_km$mean_pred, decile_km$upper,
-       angle = 90, code = 3,
-       length = 0.08,   # cap width
-       lwd = 2.5)       # line thickness
-
-
-abline(0, 1, col = "red", lty = 2, lwd = 2)
-
-# -------------------------------
-# PLOT OF PROBABILITIES
-# -------------------------------
-ggplot(accept_final, aes(x = risk_cll)) +
-  # Events (actual_exac_yn = 1) — plotted upwards
-  geom_density(
-    data = subset(accept_final, actual_exac_yn == 1),
-    aes(y = ..scaled.., fill = "Event (1)"),
-    alpha = 0.6
-  ) +
-  # No events (actual_exac_yn = 0) — plotted downwards
-  geom_density(
-    data = subset(accept_final, actual_exac_yn == 0),
-    aes(y = -..scaled.., fill = "No Event (0)"),
-    alpha = 0.6
-  ) +
-  scale_y_continuous(
-    name = "Scaled density (relative frequency)",
-    labels = abs
-  ) +
-  scale_fill_manual(
-    name = "Outcome",
-    values = c("Event (1)" = "tomato3", "No Event (0)" = "skyblue3")
-  ) +
-  labs(
-    x = "Predicted Probability (recalibrated)",
-    title = "Mirrored density of predicted probabilities by outcome"
-  ) +
-  theme_minimal(base_size = 14)
-
-# -------------------------------
-# NET BENEFIT
-# -------------------------------
-
-thresholds <- seq(0, 1.0, by = 0.01)
-horizon <- 1
-
-# Kaplan-Meier 
-survfit_all <- summary(
-  survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final),
-  times = horizon,
-  extend = TRUE
-)
-
-treat_all <- 1 - survfit_all$surv
-
-list_nb <- lapply(thresholds, function(p) {
-  NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
-  
-  p_exceed <- mean(accept_final$risk_cll > p)
-  
-  survfit_among_exceed <- try(
-    summary(
-      survfit(Surv(time2event, actual_exac_yn) ~ 1,
-              data = accept_final[accept_final$risk_cll > p, ]),
-      times = horizon,
-      extend = TRUE
-    ),
-    silent = TRUE
-  )
-  
-  if (inherits(survfit_among_exceed, "try-error") || length(survfit_among_exceed$surv) == 0) {
-    NB_model <- 0
-  } else {
-    f_given_exceed <- 1 - survfit_among_exceed$surv
-    TP <- f_given_exceed * p_exceed
-    FP <- (1 - f_given_exceed) * p_exceed
-    NB_model <- TP - FP * (p / (1 - p))
-  }
-  
-  data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
-})
-
-df_nb <- do.call(rbind.data.frame, list_nb)
-
-# Thresholds of interest
-thresholds_interest <- c(0.10, 0.20, 0.30)
-
-# Subset and compute difference
-df_nb_diff <- subset(df_nb, threshold %in% thresholds_interest)
-df_nb_diff$NB_diff <- df_nb_diff$NB_model - df_nb_diff$treat_all
-
-df_nb_diff
-
-compute_nb <- function(data, pred_col, horizon = 1,
-                       thresholds = seq(0, 1, by = 0.01)) {
-  
-  # Kaplan–Meier for entire cohort
-  km_all <- summary(
-    survfit(Surv(time2event, actual_exac_yn) ~ 1, data = data),
-    times = horizon, extend = TRUE
-  )
-  
-  treat_all <- 1 - km_all$surv
-  
-  list_nb <- lapply(thresholds, function(p) {
-    
-    NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
-    
-    # Individuals exceeding threshold
-    idx <- data[[pred_col]] > p
-    p_exceed <- mean(idx)
-    
-    # If no patients exceed threshold → NB_model = 0
-    if (sum(idx) == 0) {
-      NB_model <- 0
-    } else {
-      # KM among those exceeding threshold
-      km_exceed <- summary(
-        survfit(Surv(time2event, actual_exac_yn) ~ 1,
-                data = data[idx, ]),
-        times = horizon, extend = TRUE
-      )
-      
-      f_exceed <- 1 - km_exceed$surv
-      TP <- f_exceed * p_exceed
-      FP <- (1 - f_exceed) * p_exceed
-      NB_model <- TP - FP * (p / (1 - p))
-    }
-    
-    data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
-  })
-  
-  df <- do.call(rbind, list_nb)
-  df$model <- pred_col
-  df
-}
-
-
-df_nb_pred <- compute_nb(accept_final, pred_col = "predicted_exac_probability")
-df_nb_recal <- compute_nb(accept_final, pred_col = "risk_cll")
-
-# plot
-df_nb_all <- rbind(df_nb_pred, df_nb_recal)
-
-
-plot(df_nb_pred$threshold, df_nb_pred$NB_model, type = "l", lwd = 2, col = "blue",
-     xlab = "Threshold probability", ylab = "Net Benefit",
-     ylim = c(-0.1, 0.6))
-lines(df_nb_recal$threshold, df_nb_recal$NB_model, lwd = 2, col = "green")
-lines(df_nb_pred$threshold, df_nb_pred$treat_all, lwd = 2, col = "red")
-abline(h = 0, col = "grey", lty = 2)
-
-legend("topright",
-       c("Original model", "Recalibrated model", "Treat All", "Treat None"),
-       col = c("blue", "green", "red", "grey"),
-       lty = c(1, 1, 1, 2), lwd = 2)
-```
-
-```{r}
-# ===============================================================
-#SENSITIVITY ANALYSIS 2
-# ===============================================================
-
-accept_final <- accept_final %>%
-  filter(
-    !is.na(MRC),
-    !is.na(fev1_pp),
-    !is.na(BMI_final)
-  )
-# Cox model without  region 
-model_cll <- coxph(
-  Surv(time2event, actual_exac_yn) ~ (log(-log(1 - predicted_exac_probability))),
-  data = accept_final
-)
-
-summary(model_cll)
-
-# -------------------------------------------
-# Step 2: Predicted risk at 1 year
-# -------------------------------------------
-df_new <- accept_final %>% mutate(time2event = 1)
-df_new$risk_cll <- 1 - exp(-predict(model_cll, newdata = df_new, type = "expected"))
-accept_final$risk_cll <- df_new$risk_cll
-
-# -------------------------------------------
-#Predicted risk at 1 year manually
-# -------------------------------------------
-# Extract baseline cumulative hazard
-basehaz_data <- basehaz(model_cll, centered = FALSE)
-H0_1yr <- tail(basehaz_data$hazard[basehaz_data$time <= 1], 1)
-
-# Extract model slope
-beta <- coef(model_cll)
-
-# Compute LP from the transformed ACCEPT predictor
-accept_final$X <- log(-log(1 -accept_final$predicted_exac_probability))
-accept_final$LP <- beta * accept_final$X
-
-# Compute manual predicted risk
-accept_final$risk_manual <- 1 - exp(-H0_1yr * exp(accept_final$LP))
-
-all.equal(accept_final$risk_manual, accept_final$risk_cll)
-
-
-# -------------------------------------------
-# Step 4: Observed / Expected ratio
-# -------------------------------------------
-
-t_horizon <- 1
-km_fit <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final)
-s <- summary(km_fit, times = t_horizon, extend = TRUE)
-obs_t <- 1 - s$surv
-exp_t <- mean(accept_final$risk_cll)
-OE_t <- obs_t / exp_t
-OE_t
-
-# Number of observed events (O)
-O <- sum(accept_final$actual_exac_yn)
-
-# Confidence interval
-alpha <- 0.05
-z <- qnorm(1 - alpha / 2)
-
-OE_summary <- c(
-  "OE" = OE_t,
-  "2.5 %" = OE_t * exp(-z * sqrt(1 / O)),
-  "97.5 %" = OE_t * exp(z * sqrt(1 / O))
-)
-
-OE_summary
-
-# -------------------------------------------
-#  Slope
-# -------------------------------------------
-
-accept_final$pred.cll <- log(-log(1 - accept_final$risk_cll))
-gval <- coxph(Surv(time2event, actual_exac_yn) ~ pred.cll, data = accept_final)
-summary(gval)
-
-# -------------------------------------------
-# AUC
-# -------------------------------------------
-
-Uno_accept <- timeROC::timeROC(
-  T = accept_final$time2event,
-  delta = accept_final$actual_exac_yn,
-  marker = accept_final$risk_cll,
-  cause = 1,
-  weighting = "marginal",
-  times = 0.99,
-  iid = FALSE
-)
-
-plot(Uno_accept, time = 0.99)
-
-#  bootstrap function
-boot_auc <- function(data, indices) {
-  d <- data[indices, ]
-  roc_obj <- timeROC(
-    T = d$time2event,
-    delta = d$actual_exac_yn,
-    marker = d$risk_cll,
-    cause = 1,
-    weighting = "marginal",
-    times = 0.99,
-    iid = FALSE
-  )
-  return(roc_obj$AUC[2])
-}
-
-# Run bootstrap
-set.seed(123)
-boot_res <- boot(data = accept_final, statistic = boot_auc, R = 200)
-
-# AUC and 95% CI
-boot_ci <- boot.ci(boot_res, type = "perc")
-boot_ci
-
-# -------------------------------------------
-# Calibration Plot
-# -------------------------------------------
-
-dd <- rms::datadist(accept_final)
-# Refit Cox model using spline of predicted risk
-vcal1 <- coxph(Surv(time2event, actual_exac_yn) ~ ns(pred.cll, df = 3),
-               data = accept_final)
-
-# Survival at 1 year for each patient
-base_surv1 <- survfit(vcal1, newdata = accept_final)
-surv_1yr1 <- base_surv1$surv[which.min(abs(base_surv1$time - 1)), ]
-
-# Calibration dataset
-dat_cal <- data.frame(
-  pred = accept_final$risk_cll,
-  obs  = 1 - surv_1yr1
-)
-dat_cal <- dat_cal[order(dat_cal$pred), ]
-
-
-loess_fit <- loess(obs ~ pred, data = dat_cal, span = 0.75)
-
-pred_grid <- seq(0, 1, length.out = 200)
-loess_pred <- predict(loess_fit, newdata = data.frame(pred = pred_grid))
-
-## deciles 
-qs <- quantile(accept_final$risk_cll,
-               probs = seq(0, 1, 0.1), na.rm = TRUE)
-
-
-qs_u <- unique(qs)
-if (length(qs_u) < 11) {
-
-  accept_final$decile <- cut(rank(accept_final$risk_cll, ties.method="average"),
-                            breaks = quantile(rank(accept_final$risk_cll, ties.method="average"),
-                                              probs = seq(0,1,0.1), na.rm=TRUE),
-                            include.lowest = TRUE, labels = FALSE)
-} else {
-  accept_final$decile <- cut(accept_final$risk_cll,
-                            breaks = qs_u,
-                            include.lowest = TRUE,
-                            labels = FALSE)
-}
-
-## KM observed risk by decile at t0 (+ 95% CI)
-decile_km <- do.call(rbind, lapply(sort(unique(accept_final$decile)), function(d) {
-  df_d <- accept_final[accept_final$decile == d & !is.na(accept_final$decile), ]
-
-  km  <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = df_d)
-  km1 <- summary(km, times = 0.99, extend = TRUE)
-
-  data.frame(
-    decile    = d,
-    n         = nrow(df_d),
-    mean_pred = mean(df_d$risk_cll, na.rm = TRUE),
-    obs_risk  = 1 - km1$surv,
-    lower     = 1 - km1$upper,
-    upper     = 1 - km1$lower
-  )
-}))
-
-## plot
-plot(dat_cal$pred, dat_cal$obs,
-     pch = 5, cex = 0.35, col = rgb(0, 0, 0, 0.15),
-     xlim = c(0, 1), ylim = c(0, 1),
-     xlab = "Predicted risk at 1 year (Recalibrated)",
-     ylab = "Observed risk at 1 year"
-    )
-
-lines(pred_grid, loess_pred, col = "green", lwd = 2)
-
-points(decile_km$mean_pred, decile_km$obs_risk, pch = 16, cex = 1.0, col = "black")
-arrows(decile_km$mean_pred, decile_km$lower,
-       decile_km$mean_pred, decile_km$upper,
-       angle = 90, code = 3,
-       length = 0.08,   # cap width
-       lwd = 2.5)       # line thickness
-
-abline(0, 1, col = "red", lty = 2, lwd = 2)
-
-# -------------------------------
-# PLOT OF PROBABILITIES
-# -------------------------------
-ggplot(accept_final, aes(x = risk_cll)) +
-  # Events (actual_exac_yn = 1) — plotted upwards
-  geom_density(
-    data = subset(accept_final, actual_exac_yn == 1),
-    aes(y = ..scaled.., fill = "Event (1)"),
-    alpha = 0.6
-  ) +
-  # No events (actual_exac_yn = 0) — plotted downwards
-  geom_density(
-    data = subset(accept_final, actual_exac_yn == 0),
-    aes(y = -..scaled.., fill = "No Event (0)"),
-    alpha = 0.6
-  ) +
-  scale_y_continuous(
-    name = "Scaled density (relative frequency)",
-    labels = abs
-  ) +
-  scale_fill_manual(
-    name = "Outcome",
-    values = c("Event (1)" = "tomato3", "No Event (0)" = "skyblue3")
-  ) +
-  labs(
-    x = "Predicted Probability (recalibrated)",
-    title = "Mirrored density of predicted probabilities by outcome"
-  ) +
-  theme_minimal(base_size = 14)
-
-# -------------------------------------------
-# Net benefit
-# -------------------------------------------
-
-compute_nb <- function(data, pred_col, horizon = 1, thresholds = seq(0, 1, by = 0.01)) {
-  # Kaplan-Meier for entire population
-  survfit_all <- summary(
-    survfit(Surv(time2event, actual_exac_yn) ~ 1, data = data),
-    times = horizon, extend = TRUE
-  )
-  treat_all <- 1 - survfit_all$surv
-  
-  # Loop over thresholds
-  list_nb <- lapply(thresholds, function(p) {
-    NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
-    
-    p_exceed <- mean(data[[pred_col]] > p)
-    
-    survfit_among_exceed <- try(
-      summary(
-        survfit(Surv(time2event, actual_exac_yn) ~ 1,
-                data = data[data[[pred_col]] > p, ]),
-        times = horizon, extend = TRUE
-      ),
-      silent = TRUE
-    )
-    
-    if (inherits(survfit_among_exceed, "try-error") || length(survfit_among_exceed$surv) == 0) {
-      NB_model <- 0
-    } else {
-      f_given_exceed <- 1 - survfit_among_exceed$surv
-      TP <- f_given_exceed * p_exceed
-      FP <- (1 - f_given_exceed) * p_exceed
-      NB_model <- TP - FP * (p / (1 - p))
-    }
-    
-    data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
-  })
-  
-  df_nb <- do.call(rbind.data.frame, list_nb)
-  df_nb$model <- pred_col
-  return(df_nb)
-}
-
-df_nb_pred <- compute_nb(accept_final, pred_col = "predicted_exac_probability")
-df_nb_recal <- compute_nb(accept_final, pred_col = "risk_cll")
-
-# Combine both for plotting
-df_nb_all <- rbind(df_nb_pred, df_nb_recal)
-
-
-plot(df_nb_pred$threshold, df_nb_pred$NB_model, type = "l", lwd = 2, col = "blue",
-     xlab = "Threshold probability", ylab = "Net Benefit",
-     ylim = c(-0.1, 0.6))
-lines(df_nb_recal$threshold, df_nb_recal$NB_model, lwd = 2, col = "green")
-lines(df_nb_pred$threshold, df_nb_pred$treat_all, lwd = 2, col = "red")
-abline(h = 0, col = "grey", lty = 2)
-
-legend("topright",
-       c("Original model", "Recalibrated model", "Treat All", "Treat None"),
-       col = c("blue", "green", "red", "grey"),
-       lty = c(1, 1, 1, 2), lwd = 2)
-
-
-```
 
 ```{r}
 #  .rds file
-accept_final <- readRDS("C:/Users/jeenatm/cprd/New folder/accept_13nov.rds")
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
 # ===============================================================
 # Refit ACCEPT model WITHOUT region (no frailty term)
 # ===============================================================
@@ -2362,7 +1734,8 @@ ggplot(accept_final, aes(x = risk_noreg)) +
 # ===============================================================
 
 #  .rds file
-accept_final <- readRDS("C:/Users/jeenatm/cprd/New folder/accept_13nov.rds")
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
 
 
 summary(accept_final$predicted_exac_probability)
@@ -2741,7 +2114,8 @@ ggplot(accept_final, aes(x = risk_cll_re)) +
 ###NET BENEFIT OF ALL TOGETHER
 
 #  .rds file
-accept_final <- readRDS("C:/Users/jeenatm/cprd/New folder/accept_13nov.rds")
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
 
 ### FIXED EFFECT 
 
@@ -4007,6 +3381,652 @@ ggplot(df_nb_gender, aes(x = threshold, y = INB, colour = gender)) +
   ) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "bottom")
+```
+
+```{r}
+# ===============================================================
+#SENSITIVITY ANALYSIS 1
+# ===============================================================
+
+#  .rds file
+accept_final <- readRDS(file.path(data_dir, "accept_13nov.rds"))
+
+
+# Drop rows where fev1_fvc is missing
+accept_final <- accept_final[!is.na(accept_final$fev1_fvc), ]
+
+
+# Cox model without  region 
+model_cll <- coxph(
+  Surv(time2event, actual_exac_yn) ~ (log(-log(1 - predicted_exac_probability))),
+  data = accept_final
+)
+
+summary(model_cll)
+
+# -------------------------------------------
+# Predicted risk at 1 year
+# -------------------------------------------
+
+df_new <- accept_final %>% mutate(time2event = 1)
+df_new$risk_cll <- 1 - exp(-predict(model_cll, newdata = df_new, type = "expected"))
+accept_final$risk_cll <- df_new$risk_cll
+
+# -------------------------------------------
+#Predicted risk at 1 year manually
+# -------------------------------------------
+# baseline cumulative hazard
+basehaz_data <- basehaz(model_cll, centered = FALSE)
+H0_1yr <- tail(basehaz_data$hazard[basehaz_data$time <= 1], 1)
+
+# model slope
+beta <- coef(model_cll)
+
+# LP from the transformed ACCEPT predictor
+accept_final$X <- log(-log(1 - accept_final$predicted_exac_probability))
+accept_final$LP <- beta * accept_final$X
+
+#  manual predicted risk
+accept_final$risk_manual <- 1 - exp(-H0_1yr * exp(accept_final$LP))
+
+all.equal(accept_final$risk_manual, accept_final$risk_cll)
+
+# -------------------------------------------
+# Observed / Expected ratio
+# -------------------------------------------
+
+t_horizon <- 1
+km_fit <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final)
+s <- summary(km_fit, times = t_horizon, extend = TRUE)
+obs_t <- 1 - s$surv
+exp_t <- mean(accept_final$risk_cll)
+OE_t <- obs_t / exp_t
+OE_t
+
+# Number of observed events (O)
+O <- sum(accept_final$actual_exac_yn)
+
+# Confidence interval
+alpha <- 0.05
+z <- qnorm(1 - alpha / 2)
+
+OE_summary <- c(
+  "OE" = OE_t,
+  "2.5 %" = OE_t * exp(-z * sqrt(1 / O)),
+  "97.5 %" = OE_t * exp(z * sqrt(1 / O))
+)
+
+OE_summary
+
+# -------------------------------------------
+# Slope
+# -------------------------------------------
+
+accept_final$pred.cll <- log(-log(1 - accept_final$risk_cll))
+gval <- coxph(Surv(time2event, actual_exac_yn) ~ pred.cll, data = accept_final)
+summary(gval)
+
+# -------------------------------------------
+# AUC
+# -------------------------------------------
+
+Uno_accept <- timeROC::timeROC(
+  T = accept_final$time2event,
+  delta = accept_final$actual_exac_yn,
+  marker = accept_final$risk_cll,
+  cause = 1,
+  weighting = "marginal",
+  times = 0.99,
+  iid = FALSE
+)
+
+plot(Uno_accept, time = 0.99)
+
+# Define a bootstrap function
+boot_auc <- function(data, indices) {
+  d <- data[indices, ]
+  roc_obj <- timeROC(
+    T = d$time2event,
+    delta = d$actual_exac_yn,
+    marker = d$risk_cll,
+    cause = 1,
+    weighting = "marginal",
+    times = 0.99,
+    iid = FALSE
+  )
+  return(roc_obj$AUC[2])
+}
+
+# Run bootstrap
+set.seed(123)
+boot_res <- boot(data = accept_final, statistic = boot_auc, R = 200)
+
+# AUC and 95% CI
+boot_ci <- boot.ci(boot_res, type = "perc")
+boot_ci
+
+# -------------------------------------------
+# Calibration Plot
+# -------------------------------------------
+
+dd <- rms::datadist(accept_final)
+# Refit Cox model using spline of predicted risk
+vcal1 <- coxph(Surv(time2event, actual_exac_yn) ~ ns(pred.cll, df = 3),
+               data = accept_final)
+
+# Survival at 1 year for each patient
+base_surv1 <- survfit(vcal1, newdata = accept_final)
+surv_1yr1 <- base_surv1$surv[which.min(abs(base_surv1$time - 1)), ]
+
+# Calibration dataset
+dat_cal <- data.frame(
+  pred = accept_final$risk_cll,
+  obs  = 1 - surv_1yr1
+)
+dat_cal <- dat_cal[order(dat_cal$pred), ]
+
+
+loess_fit <- loess(obs ~ pred, data = dat_cal, span = 0.75)
+
+pred_grid <- seq(0, 1, length.out = 200)
+loess_pred <- predict(loess_fit, newdata = data.frame(pred = pred_grid))
+
+## deciles 
+qs <- quantile(accept_final$risk_cll,
+               probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+qs_u <- unique(qs)
+if (length(qs_u) < 11) {
+  accept_final$decile <- cut(rank(accept_final$risk_cll, ties.method="average"),
+                            breaks = quantile(rank(accept_final$risk_cll, ties.method="average"),
+                                              probs = seq(0,1,0.1), na.rm=TRUE),
+                            include.lowest = TRUE, labels = FALSE)
+} else {
+  accept_final$decile <- cut(accept_final$risk_cll,
+                            breaks = qs_u,
+                            include.lowest = TRUE,
+                            labels = FALSE)
+}
+
+## observed risk by decile at t0 (+ 95% CI) 
+decile_km <- do.call(rbind, lapply(sort(unique(accept_final$decile)), function(d) {
+  df_d <- accept_final[accept_final$decile == d & !is.na(accept_final$decile), ]
+
+  km  <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = df_d)
+  km1 <- summary(km, times = 0.99, extend = TRUE)
+
+  data.frame(
+    decile    = d,
+    n         = nrow(df_d),
+    mean_pred = mean(df_d$risk_cll, na.rm = TRUE),
+    obs_risk  = 1 - km1$surv,
+    lower     = 1 - km1$upper,
+    upper     = 1 - km1$lower
+  )
+}))
+
+## plot
+plot(dat_cal$pred, dat_cal$obs,
+     pch = 5, cex = 0.35, col = rgb(0, 0, 0, 0.15),
+     xlim = c(0, 1), ylim = c(0, 1),
+     xlab = "Predicted risk at 1 year (Recalibrated)",
+     ylab = "Observed risk at 1 year"
+    )
+
+lines(pred_grid, loess_pred, col = "green", lwd = 2)
+
+points(decile_km$mean_pred, decile_km$obs_risk, pch = 16, cex = 1.0, col = "black")
+arrows(decile_km$mean_pred, decile_km$lower,
+       decile_km$mean_pred, decile_km$upper,
+       angle = 90, code = 3,
+       length = 0.08,   # cap width
+       lwd = 2.5)       # line thickness
+
+
+abline(0, 1, col = "red", lty = 2, lwd = 2)
+
+# -------------------------------
+# PLOT OF PROBABILITIES
+# -------------------------------
+ggplot(accept_final, aes(x = risk_cll)) +
+  # Events (actual_exac_yn = 1) — plotted upwards
+  geom_density(
+    data = subset(accept_final, actual_exac_yn == 1),
+    aes(y = ..scaled.., fill = "Event (1)"),
+    alpha = 0.6
+  ) +
+  # No events (actual_exac_yn = 0) — plotted downwards
+  geom_density(
+    data = subset(accept_final, actual_exac_yn == 0),
+    aes(y = -..scaled.., fill = "No Event (0)"),
+    alpha = 0.6
+  ) +
+  scale_y_continuous(
+    name = "Scaled density (relative frequency)",
+    labels = abs
+  ) +
+  scale_fill_manual(
+    name = "Outcome",
+    values = c("Event (1)" = "tomato3", "No Event (0)" = "skyblue3")
+  ) +
+  labs(
+    x = "Predicted Probability (recalibrated)",
+    title = "Mirrored density of predicted probabilities by outcome"
+  ) +
+  theme_minimal(base_size = 14)
+
+# -------------------------------
+# NET BENEFIT
+# -------------------------------
+
+thresholds <- seq(0, 1.0, by = 0.01)
+horizon <- 1
+
+# Kaplan-Meier 
+survfit_all <- summary(
+  survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final),
+  times = horizon,
+  extend = TRUE
+)
+
+treat_all <- 1 - survfit_all$surv
+
+list_nb <- lapply(thresholds, function(p) {
+  NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
+  
+  p_exceed <- mean(accept_final$risk_cll > p)
+  
+  survfit_among_exceed <- try(
+    summary(
+      survfit(Surv(time2event, actual_exac_yn) ~ 1,
+              data = accept_final[accept_final$risk_cll > p, ]),
+      times = horizon,
+      extend = TRUE
+    ),
+    silent = TRUE
+  )
+  
+  if (inherits(survfit_among_exceed, "try-error") || length(survfit_among_exceed$surv) == 0) {
+    NB_model <- 0
+  } else {
+    f_given_exceed <- 1 - survfit_among_exceed$surv
+    TP <- f_given_exceed * p_exceed
+    FP <- (1 - f_given_exceed) * p_exceed
+    NB_model <- TP - FP * (p / (1 - p))
+  }
+  
+  data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
+})
+
+df_nb <- do.call(rbind.data.frame, list_nb)
+
+# Thresholds of interest
+thresholds_interest <- c(0.10, 0.20, 0.30)
+
+# Subset and compute difference
+df_nb_diff <- subset(df_nb, threshold %in% thresholds_interest)
+df_nb_diff$NB_diff <- df_nb_diff$NB_model - df_nb_diff$treat_all
+
+df_nb_diff
+
+compute_nb <- function(data, pred_col, horizon = 1,
+                       thresholds = seq(0, 1, by = 0.01)) {
+  
+  # Kaplan–Meier for entire cohort
+  km_all <- summary(
+    survfit(Surv(time2event, actual_exac_yn) ~ 1, data = data),
+    times = horizon, extend = TRUE
+  )
+  
+  treat_all <- 1 - km_all$surv
+  
+  list_nb <- lapply(thresholds, function(p) {
+    
+    NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
+    
+    # Individuals exceeding threshold
+    idx <- data[[pred_col]] > p
+    p_exceed <- mean(idx)
+    
+    # If no patients exceed threshold → NB_model = 0
+    if (sum(idx) == 0) {
+      NB_model <- 0
+    } else {
+      # KM among those exceeding threshold
+      km_exceed <- summary(
+        survfit(Surv(time2event, actual_exac_yn) ~ 1,
+                data = data[idx, ]),
+        times = horizon, extend = TRUE
+      )
+      
+      f_exceed <- 1 - km_exceed$surv
+      TP <- f_exceed * p_exceed
+      FP <- (1 - f_exceed) * p_exceed
+      NB_model <- TP - FP * (p / (1 - p))
+    }
+    
+    data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
+  })
+  
+  df <- do.call(rbind, list_nb)
+  df$model <- pred_col
+  df
+}
+
+
+df_nb_pred <- compute_nb(accept_final, pred_col = "predicted_exac_probability")
+df_nb_recal <- compute_nb(accept_final, pred_col = "risk_cll")
+
+# plot
+df_nb_all <- rbind(df_nb_pred, df_nb_recal)
+
+
+plot(df_nb_pred$threshold, df_nb_pred$NB_model, type = "l", lwd = 2, col = "blue",
+     xlab = "Threshold probability", ylab = "Net Benefit",
+     ylim = c(-0.1, 0.6))
+lines(df_nb_recal$threshold, df_nb_recal$NB_model, lwd = 2, col = "green")
+lines(df_nb_pred$threshold, df_nb_pred$treat_all, lwd = 2, col = "red")
+abline(h = 0, col = "grey", lty = 2)
+
+legend("topright",
+       c("Original model", "Recalibrated model", "Treat All", "Treat None"),
+       col = c("blue", "green", "red", "grey"),
+       lty = c(1, 1, 1, 2), lwd = 2)
+```
+
+```{r}
+# ===============================================================
+#SENSITIVITY ANALYSIS 2
+# ===============================================================
+
+accept_final <- accept_final %>%
+  filter(
+    !is.na(MRC),
+    !is.na(fev1_pp),
+    !is.na(BMI_final)
+  )
+# Cox model without  region 
+model_cll <- coxph(
+  Surv(time2event, actual_exac_yn) ~ (log(-log(1 - predicted_exac_probability))),
+  data = accept_final
+)
+
+summary(model_cll)
+
+# -------------------------------------------
+# Step 2: Predicted risk at 1 year
+# -------------------------------------------
+df_new <- accept_final %>% mutate(time2event = 1)
+df_new$risk_cll <- 1 - exp(-predict(model_cll, newdata = df_new, type = "expected"))
+accept_final$risk_cll <- df_new$risk_cll
+
+# -------------------------------------------
+#Predicted risk at 1 year manually
+# -------------------------------------------
+# Extract baseline cumulative hazard
+basehaz_data <- basehaz(model_cll, centered = FALSE)
+H0_1yr <- tail(basehaz_data$hazard[basehaz_data$time <= 1], 1)
+
+# Extract model slope
+beta <- coef(model_cll)
+
+# Compute LP from the transformed ACCEPT predictor
+accept_final$X <- log(-log(1 -accept_final$predicted_exac_probability))
+accept_final$LP <- beta * accept_final$X
+
+# Compute manual predicted risk
+accept_final$risk_manual <- 1 - exp(-H0_1yr * exp(accept_final$LP))
+
+all.equal(accept_final$risk_manual, accept_final$risk_cll)
+
+
+# -------------------------------------------
+# Step 4: Observed / Expected ratio
+# -------------------------------------------
+
+t_horizon <- 1
+km_fit <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = accept_final)
+s <- summary(km_fit, times = t_horizon, extend = TRUE)
+obs_t <- 1 - s$surv
+exp_t <- mean(accept_final$risk_cll)
+OE_t <- obs_t / exp_t
+OE_t
+
+# Number of observed events (O)
+O <- sum(accept_final$actual_exac_yn)
+
+# Confidence interval
+alpha <- 0.05
+z <- qnorm(1 - alpha / 2)
+
+OE_summary <- c(
+  "OE" = OE_t,
+  "2.5 %" = OE_t * exp(-z * sqrt(1 / O)),
+  "97.5 %" = OE_t * exp(z * sqrt(1 / O))
+)
+
+OE_summary
+
+# -------------------------------------------
+#  Slope
+# -------------------------------------------
+
+accept_final$pred.cll <- log(-log(1 - accept_final$risk_cll))
+gval <- coxph(Surv(time2event, actual_exac_yn) ~ pred.cll, data = accept_final)
+summary(gval)
+
+# -------------------------------------------
+# AUC
+# -------------------------------------------
+
+Uno_accept <- timeROC::timeROC(
+  T = accept_final$time2event,
+  delta = accept_final$actual_exac_yn,
+  marker = accept_final$risk_cll,
+  cause = 1,
+  weighting = "marginal",
+  times = 0.99,
+  iid = FALSE
+)
+
+plot(Uno_accept, time = 0.99)
+
+#  bootstrap function
+boot_auc <- function(data, indices) {
+  d <- data[indices, ]
+  roc_obj <- timeROC(
+    T = d$time2event,
+    delta = d$actual_exac_yn,
+    marker = d$risk_cll,
+    cause = 1,
+    weighting = "marginal",
+    times = 0.99,
+    iid = FALSE
+  )
+  return(roc_obj$AUC[2])
+}
+
+# Run bootstrap
+set.seed(123)
+boot_res <- boot(data = accept_final, statistic = boot_auc, R = 200)
+
+# AUC and 95% CI
+boot_ci <- boot.ci(boot_res, type = "perc")
+boot_ci
+
+# -------------------------------------------
+# Calibration Plot
+# -------------------------------------------
+
+dd <- rms::datadist(accept_final)
+# Refit Cox model using spline of predicted risk
+vcal1 <- coxph(Surv(time2event, actual_exac_yn) ~ ns(pred.cll, df = 3),
+               data = accept_final)
+
+# Survival at 1 year for each patient
+base_surv1 <- survfit(vcal1, newdata = accept_final)
+surv_1yr1 <- base_surv1$surv[which.min(abs(base_surv1$time - 1)), ]
+
+# Calibration dataset
+dat_cal <- data.frame(
+  pred = accept_final$risk_cll,
+  obs  = 1 - surv_1yr1
+)
+dat_cal <- dat_cal[order(dat_cal$pred), ]
+
+
+loess_fit <- loess(obs ~ pred, data = dat_cal, span = 0.75)
+
+pred_grid <- seq(0, 1, length.out = 200)
+loess_pred <- predict(loess_fit, newdata = data.frame(pred = pred_grid))
+
+## deciles 
+qs <- quantile(accept_final$risk_cll,
+               probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+
+qs_u <- unique(qs)
+if (length(qs_u) < 11) {
+
+  accept_final$decile <- cut(rank(accept_final$risk_cll, ties.method="average"),
+                            breaks = quantile(rank(accept_final$risk_cll, ties.method="average"),
+                                              probs = seq(0,1,0.1), na.rm=TRUE),
+                            include.lowest = TRUE, labels = FALSE)
+} else {
+  accept_final$decile <- cut(accept_final$risk_cll,
+                            breaks = qs_u,
+                            include.lowest = TRUE,
+                            labels = FALSE)
+}
+
+## KM observed risk by decile at t0 (+ 95% CI)
+decile_km <- do.call(rbind, lapply(sort(unique(accept_final$decile)), function(d) {
+  df_d <- accept_final[accept_final$decile == d & !is.na(accept_final$decile), ]
+
+  km  <- survfit(Surv(time2event, actual_exac_yn) ~ 1, data = df_d)
+  km1 <- summary(km, times = 0.99, extend = TRUE)
+
+  data.frame(
+    decile    = d,
+    n         = nrow(df_d),
+    mean_pred = mean(df_d$risk_cll, na.rm = TRUE),
+    obs_risk  = 1 - km1$surv,
+    lower     = 1 - km1$upper,
+    upper     = 1 - km1$lower
+  )
+}))
+
+## plot
+plot(dat_cal$pred, dat_cal$obs,
+     pch = 5, cex = 0.35, col = rgb(0, 0, 0, 0.15),
+     xlim = c(0, 1), ylim = c(0, 1),
+     xlab = "Predicted risk at 1 year (Recalibrated)",
+     ylab = "Observed risk at 1 year"
+    )
+
+lines(pred_grid, loess_pred, col = "green", lwd = 2)
+
+points(decile_km$mean_pred, decile_km$obs_risk, pch = 16, cex = 1.0, col = "black")
+arrows(decile_km$mean_pred, decile_km$lower,
+       decile_km$mean_pred, decile_km$upper,
+       angle = 90, code = 3,
+       length = 0.08,   # cap width
+       lwd = 2.5)       # line thickness
+
+abline(0, 1, col = "red", lty = 2, lwd = 2)
+
+# -------------------------------
+# PLOT OF PROBABILITIES
+# -------------------------------
+ggplot(accept_final, aes(x = risk_cll)) +
+  # Events (actual_exac_yn = 1) — plotted upwards
+  geom_density(
+    data = subset(accept_final, actual_exac_yn == 1),
+    aes(y = ..scaled.., fill = "Event (1)"),
+    alpha = 0.6
+  ) +
+  # No events (actual_exac_yn = 0) — plotted downwards
+  geom_density(
+    data = subset(accept_final, actual_exac_yn == 0),
+    aes(y = -..scaled.., fill = "No Event (0)"),
+    alpha = 0.6
+  ) +
+  scale_y_continuous(
+    name = "Scaled density (relative frequency)",
+    labels = abs
+  ) +
+  scale_fill_manual(
+    name = "Outcome",
+    values = c("Event (1)" = "tomato3", "No Event (0)" = "skyblue3")
+  ) +
+  labs(
+    x = "Predicted Probability (recalibrated)",
+    title = "Mirrored density of predicted probabilities by outcome"
+  ) +
+  theme_minimal(base_size = 14)
+
+# -------------------------------------------
+# Net benefit
+# -------------------------------------------
+
+compute_nb <- function(data, pred_col, horizon = 1, thresholds = seq(0, 1, by = 0.01)) {
+  # Kaplan-Meier for entire population
+  survfit_all <- summary(
+    survfit(Surv(time2event, actual_exac_yn) ~ 1, data = data),
+    times = horizon, extend = TRUE
+  )
+  treat_all <- 1 - survfit_all$surv
+  
+  # Loop over thresholds
+  list_nb <- lapply(thresholds, function(p) {
+    NB_all <- treat_all - (1 - treat_all) * (p / (1 - p))
+    
+    p_exceed <- mean(data[[pred_col]] > p)
+    
+    survfit_among_exceed <- try(
+      summary(
+        survfit(Surv(time2event, actual_exac_yn) ~ 1,
+                data = data[data[[pred_col]] > p, ]),
+        times = horizon, extend = TRUE
+      ),
+      silent = TRUE
+    )
+    
+    if (inherits(survfit_among_exceed, "try-error") || length(survfit_among_exceed$surv) == 0) {
+      NB_model <- 0
+    } else {
+      f_given_exceed <- 1 - survfit_among_exceed$surv
+      TP <- f_given_exceed * p_exceed
+      FP <- (1 - f_given_exceed) * p_exceed
+      NB_model <- TP - FP * (p / (1 - p))
+    }
+    
+    data.frame(threshold = p, NB_model = NB_model, treat_all = NB_all)
+  })
+  
+  df_nb <- do.call(rbind.data.frame, list_nb)
+  df_nb$model <- pred_col
+  return(df_nb)
+}
+
+df_nb_pred <- compute_nb(accept_final, pred_col = "predicted_exac_probability")
+df_nb_recal <- compute_nb(accept_final, pred_col = "risk_cll")
+
+# Combine both for plotting
+df_nb_all <- rbind(df_nb_pred, df_nb_recal)
+
+
+plot(df_nb_pred$threshold, df_nb_pred$NB_model, type = "l", lwd = 2, col = "blue",
+     xlab = "Threshold probability", ylab = "Net Benefit",
+     ylim = c(-0.1, 0.6))
+lines(df_nb_recal$threshold, df_nb_recal$NB_model, lwd = 2, col = "green")
+lines(df_nb_pred$threshold, df_nb_pred$treat_all, lwd = 2, col = "red")
+abline(h = 0, col = "grey", lty = 2)
+
+legend("topright",
+       c("Original model", "Recalibrated model", "Treat All", "Treat None"),
+       col = c("blue", "green", "red", "grey"),
+       lty = c(1, 1, 1, 2), lwd = 2)
 
 
 ```
