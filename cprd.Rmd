@@ -1,9 +1,3 @@
----
-title: "CPRD"
-author: "Jeenat Mehareen"
-date: "2026-01-15"
-output: html_document
----
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -4016,6 +4010,7 @@ ggplot(df_nb_gender, aes(x = threshold, y = INB, colour = gender)) +
 
 
 ```
+
 
 
 
